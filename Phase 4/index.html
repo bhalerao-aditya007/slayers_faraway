@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORBITAL — Crew Interface Agent</title>
+    <style>
+        :root {
+            --bg: #0a0e17;
+            --panel: #111827;
+            --border: #1f2937;
+            --text: #e0e6ed;
+            --muted: #94a3b8;
+            --green: #00ff88;
+            --yellow: #ffcc00;
+            --red: #ff3366;
+            --font-mono: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            overflow-x: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* T1: TACTICAL BANNER */
+        #t1-banner {
+            width: 100%;
+            padding: 1.2rem 2rem;
+            border-bottom: 2px solid var(--border);
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            align-items: center;
+            gap: 2rem;
+            transition: all 0.3s ease;
+        }
+        #t1-banner.RED { background: linear-gradient(90deg, rgba(255,51,102,0.15) 0%, transparent 100%); border-left: 6px solid var(--red); }
+        #t1-banner.YELLOW { background: linear-gradient(90deg, rgba(255,204,0,0.15) 0%, transparent 100%); border-left: 6px solid var(--yellow); }
+        #t1-banner.GREEN { background: linear-gradient(90deg, rgba(0,255,136,0.15) 0%, transparent 100%); border-left: 6px solid var(--green); }
+        
+        .status-badge {
+            font-family: var(--font-mono);
+            font-size: 1.4rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+        }
+        .RED .status-badge { color: var(--red); text-shadow: 0 0 20px rgba(255,51,102,0.4); }
+        .YELLOW .status-badge { color: var(--yellow); }
+        .GREEN .status-badge { color: var(--green); }
+        
+        .recommendation {
+            font-size: 1.8rem;
+            font-weight: 700;
+            text-align: center;
+            letter-spacing: -0.02em;
+        }
+        
+        .confidence-block { text-align: right; }
+        .confidence-label { font-family: var(--font-mono); font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
+        .confidence-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+        .confidence-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.6s ease, background 0.6s ease;
+            background: var(--green);
+        }
+        .confidence-fill.low { background: var(--red); }
+        .confidence-fill.medium { background: var(--yellow); }
+
+        /* MAIN GRID */
+        #main-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 1rem;
+            padding: 1rem;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.2rem;
+            overflow-y: auto;
+        }
+        .panel h3 {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--muted);
+            letter-spacing: 0.1em;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* T2: OPERATIONAL */
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid var(--border);
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+        }
+        .metric-label { color: var(--muted); }
+        .metric-value { color: var(--text); font-weight: 600; }
+        .symmetry-warning {
+            background: rgba(255,51,102,0.1);
+            border: 1px solid rgba(255,51,102,0.3);
+            color: var(--red);
+            padding: 0.8rem;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            margin: 0.8rem 0;
+        }
+        .anomaly-box {
+            background: rgba(255,51,102,0.08);
+            border-left: 3px solid var(--red);
+            padding: 0.8rem;
+            margin: 0.8rem 0;
+            border-radius: 0 6px 6px 0;
+        }
+        .anomaly-title { font-weight: 700; color: var(--red); margin-bottom: 0.3rem; }
+        .anomaly-meta { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+
+        .action-table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+        .action-table th {
+            text-align: left;
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            color: var(--muted);
+            padding: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .action-table td {
+            padding: 0.7rem 0.5rem;
+            font-size: 0.85rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .action-table tr:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
+        .pill {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .pill.green { background: rgba(0,255,136,0.15); color: var(--green); }
+        .pill.yellow { background: rgba(255,204,0,0.15); color: var(--yellow); }
+        .pill.red { background: rgba(255,51,102,0.15); color: var(--red); }
+
+        /* CHAT */
+        #chat-panel { display: flex; flex-direction: column; }
+        #chat-history {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 0.8rem;
+            font-size: 0.9rem;
+        }
+        .chat-msg { margin-bottom: 0.8rem; padding: 0.6rem; border-radius: 6px; max-width: 90%; }
+        .chat-msg.user { background: #1e3a8a; margin-left: auto; text-align: right; }
+        .chat-msg.orbital { background: var(--border); border-left: 3px solid var(--green); }
+        .chat-meta { font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted); margin-bottom: 0.3rem; }
+        #chat-input {
+            width: 100%;
+            padding: 0.8rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 6px;
+            font-family: var(--font-sans);
+        }
+        #chat-input:focus { outline: none; border-color: var(--green); }
+
+        /* T3: ANALYTICAL */
+        #t3-panel {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+        .viz-card {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+        }
+        .viz-card h4 {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-bottom: 0.8rem;
+            text-transform: uppercase;
+        }
+        canvas { width: 100%; height: 160px; }
+
+        /* OVERRIDE MODAL */
+        #override-modal {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        #override-modal.active { display: flex; }
+        .modal-content {
+            background: var(--panel);
+            border: 2px solid var(--red);
+            border-radius: 12px;
+            padding: 2rem;
+            width: 600px;
+            max-width: 90%;
+        }
+        .modal-title {
+            color: var(--red);
+            font-family: var(--font-mono);
+            font-size: 1.2rem;
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+        .level-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.8rem;
+            margin-bottom: 1rem;
+        }
+        .level-btn {
+            padding: 1rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 6px;
+            cursor: pointer;
+            font-family: var(--font-sans);
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .level-btn:hover { border-color: var(--yellow); background: rgba(255,204,0,0.1); }
+        .level-btn.l4 { border-color: var(--red); color: var(--red); }
+        .level-btn.l4:hover { background: rgba(255,51,102,0.2); }
+        #rationale-input {
+            width: 100%;
+            padding: 0.8rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 6px;
+            min-height: 80px;
+            font-family: var(--font-sans);
+            margin-bottom: 0.8rem;
+        }
+        .modal-actions { display: flex; gap: 0.8rem; justify-content: flex-end; }
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-primary { background: var(--green); color: #000; }
+        .btn-secondary { background: var(--border); color: var(--text); }
+
+        /* VOICE INDICATOR */
+        #voice-indicator {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: var(--green);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 30px rgba(0,255,136,0.4);
+            cursor: pointer;
+            z-index: 500;
+        }
+        #voice-indicator.active { display: flex; animation: pulse 2s infinite; }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(0,255,136,0.4); }
+            70% { box-shadow: 0 0 0 20px rgba(0,255,136,0); }
+            100% { box-shadow: 0 0 0 0 rgba(0,255,136,0); }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- T1: TACTICAL -->
+    <div id="t1-banner" class="RED">
+        <div class="status-badge" id="t1-status">STATE: RED (CRITICAL RISK)</div>
+        <div class="recommendation" id="t1-rec">HOLD POSITION - Pose Uncertain</div>
+        <div class="confidence-block">
+            <div class="confidence-label">CONFIDENCE: <span id="t1-conf-val">73</span>%</div>
+            <div class="confidence-bar">
+                <div class="confidence-fill" id="t1-conf-bar" style="width:73%"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN GRID -->
+    <div id="main-grid">
+        <!-- T2: OPERATIONAL -->
+        <div id="t2-panel" class="panel">
+            <h3>T2: Operational Display — 10s Audit</h3>
+            <div id="t2-content">
+                <div class="metric-row">
+                    <span class="metric-label">JENSEN GAIN (G_J)</span>
+                    <span class="metric-value" id="t2-jg">2.82</span>
+                </div>
+                <div class="symmetry-warning" id="t2-warning" style="display:none">
+                    [SYMMETRY AMBIGUITY: Spacecraft 180-degree roll-inversion suspected]
+                </div>
+                <div class="anomaly-box" id="t2-anomaly">
+                    <div class="anomaly-title" id="t2-anomaly-title">ECLSS | Severity: HIGH</div>
+                    <div class="anomaly-meta" id="t2-anomaly-meta">Radiator 2 Loop Leak | T-minus 14 mins</div>
+                </div>
+                <table class="action-table">
+                    <thead>
+                        <tr><th>Action</th><th>Conf</th><th>Justification</th></tr>
+                    </thead>
+                    <tbody id="t2-actions"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- CHAT -->
+        <div id="chat-panel" class="panel">
+            <h3>ORBITAL Conversational AI</h3>
+            <div id="chat-history"></div>
+            <input type="text" id="chat-input" placeholder='Say "orbital status report" or "orbital explain"...' autocomplete="off">
+        </div>
+    </div>
+
+    <!-- T3: ANALYTICAL -->
+    <div id="t3-panel" class="panel">
+        <h3>T3: Analytical Display — 2min Drill-Down</h3>
+        <div class="viz-card">
+            <h4>HDC Vector Decomposition</h4>
+            <canvas id="hdc-canvas"></canvas>
+        </div>
+        <div class="viz-card">
+            <h4>Counterfactual Trajectories</h4>
+            <canvas id="traj-canvas"></canvas>
+        </div>
+        <div class="viz-card">
+            <h4>Uncertainty Propagation</h4>
+            <canvas id="hist-canvas"></canvas>
+        </div>
+    </div>
+
+    <!-- OVERRIDE MODAL -->
+    <div id="override-modal">
+        <div class="modal-content">
+            <div class="modal-title">ARMSTRONG PROTOCOL OVERRIDE LOCK</div>
+            <div class="level-grid">
+                <button class="level-btn" onclick="sendOverride(1)">Level 1: ACKNOWLEDGE</button>
+                <button class="level-btn" onclick="sendOverride(2)">Level 2: MODIFY</button>
+                <button class="level-btn" onclick="sendOverride(3)">Level 3: REPLACE</button>
+                <button class="level-btn l4" onclick="sendOverride(4)">Level 4: REJECT (MANUAL)</button>
+            </div>
+            <textarea id="rationale-input" placeholder="Enter override rationale (mandatory for Levels 2-4)..."></textarea>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmOverride()">Execute Override</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- VOICE -->
+    <div id="voice-indicator" onclick="toggleVoice()">🎙</div>
+
+    <script>
+        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        let pendingOverrideLevel = null;
+
+        ws.onopen = () => {
+            console.log("ORBITAL interface connected");
+            ws.send(JSON.stringify({type: "request_state"}));
+        };
+
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "state_update") {
+                renderT1(msg.tactical);
+                renderT2(msg.operational);
+                renderT3(msg.analytical);
+            } else if (msg.type === "chat_response") {
+                addChat("ORBITAL", msg.text, msg.route || "det");
+            } else if (msg.type === "override_result") {
+                addChat("SYSTEM", `Override ${msg.data.status}. Strategy: ${msg.data.strategy || msg.data.payload?.action_replaced || 'N/A'}`);
+                closeModal();
+            } else if (msg.type === "voice_reject") {
+                addChat("SYSTEM", msg.text);
+            }
+        };
+
+        function renderT1(d) {
+            const banner = document.getElementById("t1-banner");
+            banner.className = d.status;
+            document.getElementById("t1-status").textContent = `STATE: ${d.status} ${d.status==="RED"?"(CRITICAL RISK)":""}`;
+            document.getElementById("t1-rec").textContent = d.recommendation;
+            document.getElementById("t1-conf-val").textContent = d.confidence_pct;
+            const bar = document.getElementById("t1-conf-bar");
+            bar.style.width = d.confidence_pct + "%";
+            bar.className = "confidence-fill " + (d.confidence_pct < 60 ? "low" : d.confidence_pct < 85 ? "medium" : "");
+        }
+
+        function renderT2(d) {
+            document.getElementById("t2-jg").textContent = d.jensen_gain.toFixed(2);
+            const warn = document.getElementById("t2-warning");
+            warn.style.display = d.symmetry_warning ? "block" : "none";
+            if (d.symmetry_warning) warn.textContent = d.symmetry_warning;
+
+            const anom = document.getElementById("t2-anomaly");
+            if (d.anomaly) {
+                anom.style.display = "block";
+                document.getElementById("t2-anomaly-title").textContent = 
+                    `${d.anomaly.subsystem} | Severity: ${d.anomaly.severity.toUpperCase()}`;
+                document.getElementById("t2-anomaly-meta").textContent = 
+                    `${d.anomaly.component} | T-minus ${d.anomaly.time_to_critical} mins`;
+            } else {
+                anom.style.display = "none";
+            }
+
+            const tbody = document.getElementById("t2-actions");
+            tbody.innerHTML = "";
+            (d.alternatives || []).forEach((a, i) => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `
+                    <td><strong>${i+1}. ${a.name}</strong></td>
+                    <td><span class="pill ${a.color}">${a.confidence}%</span></td>
+                    <td style="color:var(--muted);font-size:0.8rem">${a.justification}</td>
+                `;
+                tr.onclick = () => {
+                    pendingOverrideLevel = 3;
+                    document.getElementById("override-modal").classList.add("active");
+                    document.getElementById("rationale-input").value = `Selected alternative: ${a.name}`;
+                };
+                tbody.appendChild(tr);
+            });
+        }
+
+        function renderT3(d) {
+            drawHDC(d.hdc_pie);
+            drawTrajectories(d.trajectories);
+            drawHistograms(d.histograms);
+        }
+
+        function drawHDC(data) {
+            const canvas = document.getElementById("hdc-canvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            const cx = canvas.width/2, cy = canvas.height/2, r = Math.min(cx,cy)-20;
+            let start = -Math.PI/2;
+            const colors = ["#00ff88", "#ffcc00", "#ff3366", "#3b82f6", "#a855f7"];
+            data.forEach((slice, i) => {
+                const ang = (slice.value/100) * Math.PI * 2;
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.arc(cx, cy, r, start, start+ang);
+                ctx.fillStyle = colors[i % colors.length];
+                ctx.fill();
+                start += ang;
+            });
+            // donut hole
+            ctx.beginPath();
+            ctx.arc(cx, cy, r*0.5, 0, Math.PI*2);
+            ctx.fillStyle = var(--bg);
+            ctx.fill();
+        }
+
+        function drawTrajectories(paths) {
+            const canvas = document.getElementById("traj-canvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            ctx.fillStyle = "#0a0e17";
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            
+            // Draw 3 parallel trajectory lines
+            const colors = {"green":"#00ff88","yellow":"#ffcc00","red":"#ff3366"};
+            paths.forEach((p, i) => {
+                ctx.beginPath();
+                ctx.moveTo(20, 80 + i*40);
+                ctx.bezierCurveTo(100, 20 + i*30, 200, 120 - i*20, 280, 80);
+                ctx.strokeStyle = colors[p.color];
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.fillStyle = colors[p.color];
+                ctx.fillText(`${p.name} (${(p.collision_p*100).toFixed(0)}% risk)`, 20, 75 + i*40);
+            });
+        }
+
+        function drawHistograms(h) {
+            const canvas = document.getElementById("hist-canvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            ctx.fillStyle = "#0a0e17";
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            
+            const bars = [
+                {label:"E_T", val:h.E_T, max:0.5, color:"#3b82f6"},
+                {label:"E_R", val:h.E_R, max:0.5, color:"#a855f7"},
+                {label:"G_J", val:h.jensen_gain/5, max:1, color:"#ff3366"}
+            ];
+            bars.forEach((b, i) => {
+                const h_px = (b.val/b.max) * (canvas.height - 40);
+                const x = 40 + i * 80;
+                ctx.fillStyle = b.color;
+                ctx.fillRect(x, canvas.height - 20 - h_px, 50, h_px);
+                ctx.fillStyle = "#94a3b8";
+                ctx.fillText(b.label, x, canvas.height - 5);
+            });
+        }
+
+        function addChat(sender, text, route="") {
+            const div = document.getElementById("chat-history");
+            const msg = document.createElement("div");
+            msg.className = `chat-msg ${sender==="USER"?"user":"orbital"}`;
+            const meta = route ? `<div class="chat-meta">${sender} • ${route}</div>` : `<div class="chat-meta">${sender}</div>`;
+            msg.innerHTML = meta + text.replace(/\n/g,"<<br>");
+            div.appendChild(msg);
+            div.scrollTop = div.scrollHeight;
+        }
+
+        document.getElementById("chat-input").addEventListener("keydown", (e) => {
+            if (e.key === "Enter") {
+                const text = e.target.value;
+                if (!text) return;
+                addChat("USER", text);
+                ws.send(JSON.stringify({type: "chat", text}));
+                e.target.value = "";
+            }
+        });
+
+        function sendOverride(level) {
+            pendingOverrideLevel = level;
+            if (level === 1) {
+                ws.send(JSON.stringify({
+                    type: "override", level: 1, action_id: "primary", operator: "CMDR"
+                }));
+                return;
+            }
+            document.getElementById("override-modal").classList.add("active");
+        }
+
+        function confirmOverride() {
+            const rationale = document.getElementById("rationale-input").value;
+            ws.send(JSON.stringify({
+                type: "override",
+                level: pendingOverrideLevel,
+                action_id: "alt_2",
+                operator: "CMDR",
+                rationale: rationale
+            }));
+        }
+
+        function closeModal() {
+            document.getElementById("override-modal").classList.remove("active");
+            pendingOverrideLevel = null;
+        }
+
+        // Voice simulation
+        let voiceActive = false;
+        function toggleVoice() {
+            voiceActive = !voiceActive;
+            const ind = document.getElementById("voice-indicator");
+            if (voiceActive) {
+                ind.classList.add("active");
+                addChat("SYSTEM", "Voice pipeline active. Say 'orbital' followed by command.");
+                // Simulate recognition after 3s
+                setTimeout(() => {
+                    if (voiceActive) {
+                        const cmds = ["orbital status report", "orbital explain", "orbital what are my options"];
+                        const cmd = cmds[Math.floor(Math.random()*cmds.length)];
+                        addChat("VOICE", `"${cmd}"`);
+                        ws.send(JSON.stringify({type: "voice", text: cmd}));
+                        toggleVoice();
+                    }
+                }, 3000);
+            } else {
+                ind.classList.remove("active");
+            }
+        }
+
+        // Keyboard shortcut: O for override modal
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "o" && e.ctrlKey) {
+                e.preventDefault();
+                document.getElementById("override-modal").classList.add("active");
+            }
+        });
+    </script>
+</body>
+</html>
