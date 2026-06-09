@@ -136,34 +136,17 @@ class PerceptionAgent:
         print(f"  Jensen Gain: {'enabled' if run_jensen_gain else 'disabled'}")
 
     def _load_model(self, model_path: str):
-        """
-        Load trained PyTorch model.
-        Implemented when model training is complete.
-        """
-        # This will be implemented once Kaggle training is done
-        # For now raises informative error
-        raise NotImplementedError(
-            f"Model loading not yet implemented. "
-            f"Use pose_fn for testing. "
-            f"Model path was: {model_path}"
-        )
+        import torch
+        self._model = torch.load(model_path, map_location='cpu')
+        self._model.eval()
+        self._pose_fn = self._model_inference
 
     def _pose_fn_wrapper(self, image: np.ndarray):
-        """
-        Calls either the loaded model or the provided test function.
-        Always returns (R: ndarray (3,3), t: ndarray (3,))
-        """
-        if self._pose_fn is not None:
-            result = self._pose_fn(image)
-            if isinstance(result, tuple):
-                R, t = result
-            else:
-                # Some test fns return just R
-                R = result
-                t = np.zeros(3)
-            return np.array(R), np.array(t)
-        else:
-            raise RuntimeError("No pose function or model loaded")
+        import torch
+        tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
+        with torch.no_grad():
+            R, t = self._model(tensor)
+        return R.squeeze().numpy(), t.squeeze().numpy()
 
     def _R_to_quaternion(self, R: np.ndarray) -> list:
         """Convert rotation matrix to [w, x, y, z] quaternion."""
