@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict
 from .physics import SpacecraftConfig, PhysicsSimulator
 from .counterfactual import CounterfactualEngine
-
+from scipy.spatial.transform import Rotation as SciRotation
 
 class ActionAgent:
     def __init__(self, config: SpacecraftConfig,
