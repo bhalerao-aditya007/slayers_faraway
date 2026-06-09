@@ -103,7 +103,7 @@ def test_coverage_stats():
               f"mean_gap={stats['mean_gap_deg']:.2f}° "
               f"max_gap={stats['max_gap_deg']:.2f}°")
 
-    print("\nRule of thumb: max_gap should be < 15° for good classification")
+    print("\nRule of thumb: max_gap should be < 30° for tangent space refinement to work")
     print("PASSED\n")
 
 
