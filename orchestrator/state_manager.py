@@ -8,6 +8,7 @@ from .message_schemas import (
     PoseEstimateMessage, SituationVectorMessage,
     ActionRecommendationMessage, HumanOverrideMessage
 )
+from dataclasses import dataclass, field, asdict
 
 
 @dataclass
