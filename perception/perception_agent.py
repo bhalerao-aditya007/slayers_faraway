@@ -140,13 +140,28 @@ class PerceptionAgent:
         self._model = torch.load(model_path, map_location='cpu')
         self._model.eval()
         self._pose_fn = self._model_inference
-
-    def _pose_fn_wrapper(self, image: np.ndarray):
+    def _model_inference(self, image: np.ndarray):
         import torch
         tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float()
         with torch.no_grad():
             R, t = self._model(tensor)
         return R.squeeze().numpy(), t.squeeze().numpy()
+    def _pose_fn_wrapper(self, image: np.ndarray):
+        """
+        Calls either the loaded model or the provided test function.
+        Always returns (R: ndarray (3,3), t: ndarray (3,))
+        """
+        if self._pose_fn is not None:
+            result = self._pose_fn(image)
+            if isinstance(result, tuple):
+                R, t = result
+            else:
+                # Some test fns return just R
+                R = result
+                t = np.zeros(3)
+            return np.array(R), np.array(t)
+        else:
+            raise RuntimeError("No pose function or model loaded")
 
     def _R_to_quaternion(self, R: np.ndarray) -> list:
         """Convert rotation matrix to [w, x, y, z] quaternion."""
