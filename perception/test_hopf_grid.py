@@ -14,8 +14,8 @@ def test_basic_construction():
 
     grid = HopfFibrationGrid(n_elevation=64, n_inplane=16)
 
-    assert grid.anchor_rotations.shape == (512, 3, 3), "Wrong shape"
-    assert grid.anchor_quaternions.shape == (512, 4), "Wrong quat shape"
+    assert grid.anchor_rotations.shape == (1024, 3, 3), "Wrong shape"
+    assert grid.anchor_quaternions.shape == (1024, 4), "Wrong quat shape"
 
     # Verify all are valid rotation matrices
     for i, R in enumerate(grid.anchor_rotations):
