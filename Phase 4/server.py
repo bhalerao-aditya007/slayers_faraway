@@ -585,7 +585,7 @@ async def websocket_endpoint(websocket: WebSocket):
 # -----------------------------------------------------------------------------
 # REDIS INTEGRATION STUB (Production Hook)
 # -----------------------------------------------------------------------------
-"""
+
 # To wire into Phase 2/3 (Cognition + Action agents), add this to startup:
 
 import aioredis
@@ -615,7 +615,7 @@ async def redis_listener():
                     counterfactuals=[CounterfactualPath(**c) for c in payload.get("counterfactuals", [])]
                 )
                 await agent.handle_state_update(new_state)
-"""
+
 
 if __name__ == "__main__":
     import uvicorn
