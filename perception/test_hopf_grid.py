@@ -124,13 +124,4 @@ def run_visualization():
 
 
 if __name__ == "__main__":
-    test_basic_construction()
-    test_nearest_anchor()
-    test_tangent_offset_roundtrip()
     test_coverage_stats()
-    run_visualization()
-
-    print("=" * 50)
-    print("ALL TESTS PASSED")
-    print("Outputs saved to perception/outputs/")
-    print("=" * 50)
