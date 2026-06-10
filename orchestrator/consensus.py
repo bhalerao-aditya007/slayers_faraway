@@ -22,14 +22,34 @@ SAFETY_RANKING = [
 ]
 
 
+def _normalize_action(action) -> str:
+    """Coerce ActionType enum or legacy uppercase strings to canonical values."""
+    if hasattr(action, "value"):
+        return action.value
+    s = str(action)
+    legacy = {
+        "HOLD_POSITION": ActionType.HOLD_POSITION,
+        "PROCEED_SLOW": ActionType.PROCEED_SLOW,
+        "PROCEED_NORMAL": ActionType.PROCEED_NORMAL,
+        "ABORT": ActionType.ABORT,
+        "RECONFIGURE_POWER": ActionType.RECONFIGURE_POWER,
+        "ISOLATE_MODULE": ActionType.ISOLATE_MODULE,
+        "EMERGENCY_VENT": ActionType.EMERGENCY_VENT,
+        "AWAIT_HUMAN": ActionType.AWAIT_HUMAN,
+        "AUTONOMOUS_FALLBACK": ActionType.AUTONOMOUS_FALLBACK,
+    }
+    return legacy.get(s, s).value if s in legacy else s
+
+
 def most_conservative(actions: list) -> str:
     """Return the most conservative action from a list."""
     ranked = []
     for a in actions:
+        a_norm = _normalize_action(a)
         try:
-            ranked.append((SAFETY_RANKING.index(a), a))
+            ranked.append((SAFETY_RANKING.index(a_norm), a_norm))
         except ValueError:
-            ranked.append((len(SAFETY_RANKING), a))
+            ranked.append((len(SAFETY_RANKING), a_norm))
     ranked.sort(key=lambda x: x[0])
     return ranked[0][1] if ranked else ActionType.HOLD_POSITION
 
@@ -195,12 +215,17 @@ class ConsensusEngine:
                               human_msg: HumanOverrideMessage,
                               votes: dict) -> ConsensusActionMessage:
         """Human override immediately becomes final action."""
+        override_level = (
+            human_msg.override_level.value
+            if hasattr(human_msg.override_level, "value")
+            else str(human_msg.override_level)
+        )
         return ConsensusActionMessage(
             final_action=human_msg.selected_action,
             consensus_reached=True,
             votes=votes,
             override_applied=True,
-            override_level=human_msg.override_level,
+            override_level=override_level,
             escalated_to_human=False,
             reasoning=f"HUMAN OVERRIDE Level {human_msg.override_level}: "
                       f"{human_msg.selected_action} | "

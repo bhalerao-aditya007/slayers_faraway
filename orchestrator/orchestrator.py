@@ -5,6 +5,7 @@ Orchestrator Agent — coordinates all sub-agents via Redis pub/sub.
 import json
 import time
 import threading
+from collections import deque
 import redis
 from typing import Optional
 
@@ -13,7 +14,8 @@ from .message_schemas import (
     PoseEstimateMessage, SituationVectorMessage,
     ActionRecommendationMessage, HumanOverrideMessage,
     ConsensusActionMessage, EscalationMessage,
-    SystemStatusMessage, ConfidenceLevel
+    SystemStatusMessage, ConfidenceLevel,
+    filter_dataclass_fields,
 )
 from .state_manager import StateManager
 from .consensus import ConsensusEngine
@@ -74,7 +76,7 @@ class Orchestrator:
         self._latest_perception: Optional[PoseEstimateMessage] = None
         self._latest_cognition:  Optional[SituationVectorMessage] = None
         self._latest_action:     Optional[ActionRecommendationMessage] = None
-        self._latest_human:      Optional[HumanOverrideMessage] = None
+        self._human_queue: deque = deque()
         self._msg_lock = threading.Lock()
 
         # Control flags
@@ -152,32 +154,37 @@ class Orchestrator:
 
         with self._msg_lock:
             if channel == CH_PERCEPTION:
-                self._latest_perception = PoseEstimateMessage(**payload)
+                self._latest_perception = PoseEstimateMessage(
+                    **filter_dataclass_fields(PoseEstimateMessage, payload))
                 self.state.update_from_perception(self._latest_perception)
                 print(f"[Orchestrator] Perception: "
                       f"confidence={self._latest_perception.confidence_level} "
                       f"JG={self._latest_perception.jensen_gain:.1f}°")
 
             elif channel == CH_COGNITION:
-                self._latest_cognition = SituationVectorMessage(**payload)
+                self._latest_cognition = SituationVectorMessage(
+                    **filter_dataclass_fields(SituationVectorMessage, payload))
                 self.state.update_from_cognition(self._latest_cognition)
                 print(f"[Orchestrator] Cognition: "
                       f"anomaly={self._latest_cognition.anomaly_detected} "
                       f"novelty={self._latest_cognition.novelty_score:.2f}")
 
             elif channel == CH_ACTION:
-                self._latest_action = ActionRecommendationMessage(**payload)
+                self._latest_action = ActionRecommendationMessage(
+                    **filter_dataclass_fields(ActionRecommendationMessage, payload))
                 self.state.update_from_action(self._latest_action)
                 print(f"[Orchestrator] Action: "
                       f"{self._latest_action.primary_action}")
 
             elif channel == CH_HUMAN_IN:
-                self._latest_human = HumanOverrideMessage(**payload)
-                self.state.update_from_human(self._latest_human)
-                self.armstrong.receive_override(self._latest_human)
+                human_msg = HumanOverrideMessage(
+                    **filter_dataclass_fields(HumanOverrideMessage, payload))
+                self._human_queue.append(human_msg)
+                self.state.update_from_human(human_msg)
+                self.armstrong.receive_override(human_msg)
                 print(f"[Orchestrator] Human override: "
-                      f"Level {self._latest_human.override_level} "
-                      f"-> {self._latest_human.selected_action}")
+                      f"Level {human_msg.override_level} "
+                      f"-> {human_msg.selected_action}")
 
     def _decision_loop(self):
         """
@@ -191,9 +198,7 @@ class Orchestrator:
                 p = self._latest_perception
                 c = self._latest_cognition
                 a = self._latest_action
-                h = self._latest_human
-                # Consume human override (one-shot)
-                self._latest_human = None
+                h = self._human_queue.popleft() if self._human_queue else None
 
             # Run consensus
             result = self.consensus.run(

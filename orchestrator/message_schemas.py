@@ -85,6 +85,12 @@ class BaseMessage:
         return cls(**json.loads(json_str))
 
 
+def filter_dataclass_fields(cls, payload: dict) -> dict:
+    """Strip unknown keys before dataclass construction."""
+    allowed = cls.__dataclass_fields__
+    return {k: v for k, v in payload.items() if k in allowed}
+
+
 @dataclass
 class PoseEstimateMessage(BaseMessage):
     """Perception agent -> Redis channel: perception.out"""
