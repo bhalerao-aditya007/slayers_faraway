@@ -8,7 +8,6 @@ from .message_schemas import (
     PoseEstimateMessage, SituationVectorMessage,
     ActionRecommendationMessage, HumanOverrideMessage
 )
-from dataclasses import dataclass, field, asdict
 
 
 @dataclass
@@ -95,6 +94,7 @@ class StateManager:
             self._state.pose_confidence        = msg.confidence_level
             self._state.pose_trustworthy       = msg.is_trustworthy
             self._state.jensen_gain            = msg.jensen_gain
+            self.update_agent_heartbeat("perception")
 
     def update_from_cognition(self, msg: SituationVectorMessage):
         with self._lock:
@@ -104,12 +104,14 @@ class StateManager:
             self._state.anomaly_severity       = msg.anomaly_severity
             self._state.novelty_score          = msg.novelty_score
             self._state.recommended_action     = msg.recommended_action
+            self.update_agent_heartbeat("cognition")
 
     def update_from_action(self, msg: ActionRecommendationMessage):
         with self._lock:
             self._state.latest_recommendation  = asdict(msg)
             self._state.recommendation_timestamp = msg.timestamp
             self._state.recommended_action     = msg.primary_action
+            self.update_agent_heartbeat("action")
 
     def update_from_human(self, msg: HumanOverrideMessage):
         with self._lock:

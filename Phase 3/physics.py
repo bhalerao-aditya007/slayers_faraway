@@ -274,16 +274,13 @@ class PhysicsSimulator:
         # ── Attitude dynamics (Euler) ──
         Jw = np.einsum('ij,nj->ni', cfg.inertia, w)
         wxJw = np.cross(w, Jw)
-        M_body = self._compute_body_torque(q, w, action_flags, t)
+        F_body, M_body, u_thrusters = self._compute_body_wrench(
+            q, w, action_flags, t, state)
         dw = np.einsum('ij,nj->ni', cfg.inertia_inv, M_body - wxJw)
         dst[:, self.layout.idx_wx:self.layout.idx_wx + 3] = dw
 
         # ── Translational dynamics (CWH with forcing) ──
-        F_body, u_thrusters = self._compute_body_force(q, action_flags, t)
-        F_lvlh = quat_rotate_vector(q, F_body)  # q: LVLH→body, so R(q) rotates LVLH vectors to body.
-        # To get LVLH force from body force, we need inverse: F_lvlh = R(q)^T @ F_body.
-        # quat_rotate_vector applies R(q). We need R(q)^T.
-        # Since R(q)^T = R(q^{-1}) and q^{-1} = [w,-x,-y,-z], we can negate vector part.
+        # F_body is body-frame; rotate to LVLH via R(q)^T for CWH equations.
         q_inv = q.copy()
         q_inv[:, 1:4] *= -1
         F_lvlh = quat_rotate_vector(q_inv, F_body)
@@ -313,27 +310,39 @@ class PhysicsSimulator:
         self._last_state = state.copy()
         return dst
 
-    def _compute_body_force(self, q, w, action_flags, t):
-        """Guidance + TAM allocation → actual body-frame force & thruster commands."""
+    def _position_velocity(self, state: Optional[np.ndarray]):
+        """Current r, v for guidance — prefer live RK4 state over cached copy."""
+        n = self.n_mc
+        if state is not None:
+            r = state[:, self.layout.idx_x:self.layout.idx_x + 3]
+            v = state[:, self.layout.idx_vx:self.layout.idx_vx + 3]
+        elif self._last_state is not None:
+            r = self._last_state[:, self.layout.idx_x:self.layout.idx_x + 3]
+            v = self._last_state[:, self.layout.idx_vx:self.layout.idx_vx + 3]
+        else:
+            r = np.zeros((n, 3))
+            v = np.zeros((n, 3))
+        return r, v
+
+    def _compute_body_wrench(self, q, w, action_flags, t,
+                             state: Optional[np.ndarray] = None):
+        """Guidance + TAM allocation → body-frame force, torque, thruster commands."""
         n = self.n_mc
         cfg = self.cfg
         F_des_lvlh = np.zeros((n, 3))
+        r, v = self._position_velocity(state)
 
         act = action_flags.get('action', 'HOLD')
 
         if act == 'ABORT':
-            # Retro-thrust along -V-bar (assumed -y in LVLH)
+            # Retro-thrust along -V-bar in LVLH; rotated to body below.
             F_des_lvlh[:, 1] = -sum(th.max_thrust for th in cfg.thrusters)
 
         elif act == 'HOLD':
-            # Cancel CWH natural acceleration + damp velocity
-            r = self._last_state[:, self.layout.idx_x:self.layout.idx_x + 3]
-            v = self._last_state[:, self.layout.idx_vx:self.layout.idx_vx + 3]
+            # CWH natural acceleration (Hill's equations):
+            #   ẍ = 3n²x + 2nẏ,  ÿ = -2nẋ,  z̈ = -n²z
             n_orb = cfg.mean_motion
             a_cwh = np.zeros((n, 3))
-            a_cwh[:, 0] = 3 * n_orb ** 2 * r[:, 0] + 2 * n_orb * v[:, 1]
-            a_cwh[:, 1] = -2 * n_orb * r[:, 0]  # wait, derivative of y is v_y, but acceleration term is -2n*v_x
-            # Correct CWH natural acceleration:
             a_cwh[:, 0] = 3 * n_orb ** 2 * r[:, 0] + 2 * n_orb * v[:, 1]
             a_cwh[:, 1] = -2 * n_orb * v[:, 0]
             a_cwh[:, 2] = -n_orb ** 2 * r[:, 2]
@@ -341,43 +350,27 @@ class PhysicsSimulator:
 
         elif act in ('PROCEED_SLOW', 'PROCEED_NORMAL'):
             v_dock = 0.05 if act == 'PROCEED_SLOW' else 0.20
-            r = self._last_state[:, self.layout.idx_x:self.layout.idx_x + 3]
-            v = self._last_state[:, self.layout.idx_vx:self.layout.idx_vx + 3]
             n_orb = cfg.mean_motion
             a_cwh = np.zeros((n, 3))
             a_cwh[:, 0] = 3 * n_orb ** 2 * r[:, 0] + 2 * n_orb * v[:, 1]
             a_cwh[:, 1] = -2 * n_orb * v[:, 0]
             a_cwh[:, 2] = -n_orb ** 2 * r[:, 2]
             v_des = np.zeros((n, 3))
-            v_des[:, 0] = -v_dock  # approach along -x
+            v_des[:, 0] = -v_dock
             F_des_lvlh = cfg.mass * a_cwh - 0.5 * cfg.mass * (v - v_des)
 
         elif act == 'EMERGENCY_VENT' and t < 1.0:
             F_des_lvlh = np.tile(np.array([0.0, -50.0, 0.0]), (n, 1))
 
-        # Desired attitude torque (keep docking/retro axis aligned)
         M_des = self._attitude_controller(q, w, act)
-
-        # Rotate desired force to body frame: F_body = R(q) @ F_lvlh
         F_des_body = quat_rotate_vector(q, F_des_lvlh)
 
-        # TAM allocation
-        cmd = np.concatenate([F_des_body, M_des], axis=1)  # (n,6)
+        cmd = np.concatenate([F_des_body, M_des], axis=1)
         u = np.einsum('ij,nj->ni', cfg.tam_pinv, cmd)
         u = np.clip(u, 0.0, 1.0)
 
-        # Actual force/torque produced
         FM = np.einsum('ij,nj->ni', cfg.tam, u)
-        return FM[:, 0:3], u
-
-    def _compute_body_torque(self, q, w, action_flags, t):
-        """Alias for torque component of TAM output."""
-        _, _ = self._compute_body_force(q, w, action_flags, t)
-        # _compute_body_force caches nothing; we re-run to get torque.
-        # To avoid double computation, we could refactor, but for clarity:
-        F_body, u = self._compute_body_force(q, w, action_flags, t)
-        FM = np.einsum('ij,nj->ni', self.cfg.tam, u)
-        return FM[:, 3:6]
+        return FM[:, 0:3], FM[:, 3:6], u
 
     def _attitude_controller(self, q, w, act):
         """PD attitude controller returning desired body-frame torque."""

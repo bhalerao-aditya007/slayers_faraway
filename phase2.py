@@ -190,7 +190,7 @@ class ItemMemory:
         # Confidence Levels
         "high", "moderate", "low", "critical",
         # Health States
-        "nominal", "degraded", "failed",
+        "nominal", "degraded", "critical", "failed",
         # Distance
         "very_close", "close", "medium", "far",
         # Orientation
@@ -219,6 +219,17 @@ class ItemMemory:
     def _init_core_symbols(self):
         for symbol in self.ATOMIC_SYMBOLS:
             self.memory[symbol] = self.engine.generate_random_vector(symbol)
+        # Composite subsystem health symbols (o2_nominal, battery_critical, …)
+        subsystems = [
+            "o2", "co2", "pressure", "temperature", "humidity",
+            "battery", "solar", "load", "radiator", "coolant", "heat",
+        ]
+        for sub in subsystems:
+            for state in ("nominal", "degraded", "critical", "failed"):
+                key = f"{sub}_{state}"
+                self.memory[key] = self.engine.bind(
+                    self.memory[sub], self.memory[state]
+                )
             
     def get(self, symbol: str) -> np.ndarray:
         """Retrieve or auto-generate a hypervector for any symbol."""
@@ -439,7 +450,7 @@ class SituationalAwareness:
     """
     
     def __init__(self, engine: HDCEngine, item_memory: ItemMemory,
-                 similarity_threshold: float = 0.55):
+                 similarity_threshold: float = 0.20):
         self.engine = engine
         self.im = item_memory
         self.threshold = similarity_threshold
@@ -582,10 +593,10 @@ class ExplainabilityInterface:
         vectors = list(components.values())
         
         for i, (name, vec) in enumerate(components.items()):
-            # Unbind all other components from situation
-            others = [vectors[j] for j in range(len(vectors)) if j != i]
-            if others:
-                v_unbound = self.engine.bind(v_situation, *others)
+            # Unbind component i: bind(situation, all_other_components)
+            inverse = [vectors[j] for j in range(len(vectors)) if j != i]
+            if inverse:
+                v_unbound = self.engine.bind(v_situation, *inverse)
             else:
                 v_unbound = v_situation
             sim = self.engine.cosine_similarity(v_unbound, vec)
@@ -663,7 +674,7 @@ class HyperdimensionalCognitionLayer:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = config or {}
         self.dim = self.config.get("dim", 10000)
-        self.similarity_threshold = self.config.get("similarity_threshold", 0.55)
+        self.similarity_threshold = self.config.get("similarity_threshold", 0.20)
         self.novelty_threshold = self.config.get("novelty_threshold", 0.45)
         
         self.engine = HDCEngine(dim=self.dim, seed=self.config.get("seed", 42))
@@ -801,7 +812,7 @@ if __name__ == "__main__":
     # Initialize Phase 2
     hdc = HyperdimensionalCognitionLayer(config={
         "dim": 10000,
-        "similarity_threshold": 0.55,
+        "similarity_threshold": 0.20,
         "novelty_threshold": 0.45
     })
     

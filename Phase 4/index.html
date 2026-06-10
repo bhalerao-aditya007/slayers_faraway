@@ -388,16 +388,46 @@
     <!-- VOICE -->
     <div id="voice-indicator" onclick="toggleVoice()">🎙</div>
 
+    <div id="reconnect-banner" style="display:none;position:fixed;top:0;left:0;right:0;background:#412402;color:#fac775;text-align:center;padding:6px;font-size:0.85rem;z-index:9999;">Reconnecting to ORBITAL server…</div>
+
     <script>
-        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        let ws = null;
         let pendingOverrideLevel = null;
+        let reconnectDelay = 2000;
 
-        ws.onopen = () => {
-            console.log("ORBITAL interface connected");
-            ws.send(JSON.stringify({type: "request_state"}));
-        };
+        function setupCanvas(canvas) {
+            const dpr = window.devicePixelRatio || 1;
+            const w = canvas.offsetWidth;
+            const h = canvas.offsetHeight;
+            canvas.width = w * dpr;
+            canvas.height = h * dpr;
+            const ctx = canvas.getContext("2d");
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            return ctx;
+        }
 
-        ws.onmessage = (event) => {
+        function connectWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            const banner = document.getElementById("reconnect-banner");
+
+            ws.onopen = () => {
+                reconnectDelay = 2000;
+                banner.style.display = "none";
+                console.log("ORBITAL interface connected");
+                ws.send(JSON.stringify({type: "request_state"}));
+            };
+
+            ws.onclose = () => {
+                banner.style.display = "block";
+                setTimeout(connectWebSocket, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+            };
+
+            ws.onerror = () => {
+                banner.style.display = "block";
+            };
+
+            ws.onmessage = (event) => {
             const msg = JSON.parse(event.data);
             if (msg.type === "state_update") {
                 renderT1(msg.tactical);
@@ -411,7 +441,10 @@
             } else if (msg.type === "voice_reject") {
                 addChat("SYSTEM", msg.text);
             }
-        };
+            };
+        }
+
+        connectWebSocket();
 
         function renderT1(d) {
             const banner = document.getElementById("t1-banner");
@@ -467,10 +500,9 @@
 
         function drawHDC(data) {
             const canvas = document.getElementById("hdc-canvas");
-            const ctx = canvas.getContext("2d");
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
-            const cx = canvas.width/2, cy = canvas.height/2, r = Math.min(cx,cy)-20;
+            const ctx = setupCanvas(canvas);
+            const cx = canvas.offsetWidth/2, cy = canvas.offsetHeight/2;
+            const r = Math.min(cx, cy) - 20;
             let start = -Math.PI/2;
             const colors = ["#00ff88", "#ffcc00", "#ff3366", "#3b82f6", "#a855f7"];
             data.forEach((slice, i) => {
@@ -491,11 +523,9 @@
 
         function drawTrajectories(paths) {
             const canvas = document.getElementById("traj-canvas");
-            const ctx = canvas.getContext("2d");
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
+            const ctx = setupCanvas(canvas);
             ctx.fillStyle = "#0a0e17";
-            ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.fillRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
             
             // Draw 3 parallel trajectory lines
             const colors = {"green":"#00ff88","yellow":"#ffcc00","red":"#ff3366"};
@@ -513,11 +543,9 @@
 
         function drawHistograms(h) {
             const canvas = document.getElementById("hist-canvas");
-            const ctx = canvas.getContext("2d");
-            canvas.width = canvas.offsetWidth;
-            canvas.height = canvas.offsetHeight;
+            const ctx = setupCanvas(canvas);
             ctx.fillStyle = "#0a0e17";
-            ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.fillRect(0, 0, canvas.offsetWidth, canvas.offsetHeight);
             
             const bars = [
                 {label:"E_T", val:h.E_T, max:0.5, color:"#3b82f6"},
@@ -525,12 +553,12 @@
                 {label:"G_J", val:h.jensen_gain/5, max:1, color:"#ff3366"}
             ];
             bars.forEach((b, i) => {
-                const h_px = (b.val/b.max) * (canvas.height - 40);
+                const h_px = (b.val/b.max) * (canvas.offsetHeight - 40);
                 const x = 40 + i * 80;
                 ctx.fillStyle = b.color;
-                ctx.fillRect(x, canvas.height - 20 - h_px, 50, h_px);
+                ctx.fillRect(x, canvas.offsetHeight - 20 - h_px, 50, h_px);
                 ctx.fillStyle = "#94a3b8";
-                ctx.fillText(b.label, x, canvas.height - 5);
+                ctx.fillText(b.label, x, canvas.offsetHeight - 5);
             });
         }
 
@@ -538,10 +566,21 @@
             const div = document.getElementById("chat-history");
             const msg = document.createElement("div");
             msg.className = `chat-msg ${sender==="USER"?"user":"orbital"}`;
-            const meta = route ? `<div class="chat-meta">${sender} • ${route}</div>` : `<div class="chat-meta">${sender}</div>`;
-            msg.innerHTML = meta + text.replace(/\n/g,"<<br>");
+            const meta = document.createElement("div");
+            meta.className = "chat-meta";
+            meta.textContent = route ? `${sender} • ${route}` : sender;
+            const body = document.createElement("div");
+            body.textContent = text;
+            msg.appendChild(meta);
+            msg.appendChild(body);
             div.appendChild(msg);
             div.scrollTop = div.scrollHeight;
+        }
+
+        function wsSend(payload) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(payload));
+            }
         }
 
         document.getElementById("chat-input").addEventListener("keydown", (e) => {
@@ -549,7 +588,7 @@
                 const text = e.target.value;
                 if (!text) return;
                 addChat("USER", text);
-                ws.send(JSON.stringify({type: "chat", text}));
+                wsSend({type: "chat", text});
                 e.target.value = "";
             }
         });
@@ -557,9 +596,9 @@
         function sendOverride(level) {
             pendingOverrideLevel = level;
             if (level === 1) {
-                ws.send(JSON.stringify({
+                wsSend({
                     type: "override", level: 1, action_id: "primary", operator: "CMDR"
-                }));
+                });
                 return;
             }
             document.getElementById("override-modal").classList.add("active");
@@ -567,13 +606,13 @@
 
         function confirmOverride() {
             const rationale = document.getElementById("rationale-input").value;
-            ws.send(JSON.stringify({
+            wsSend({
                 type: "override",
                 level: pendingOverrideLevel,
                 action_id: "alt_2",
                 operator: "CMDR",
                 rationale: rationale
-            }));
+            });
         }
 
         function closeModal() {
@@ -595,7 +634,7 @@
                         const cmds = ["orbital status report", "orbital explain", "orbital what are my options"];
                         const cmd = cmds[Math.floor(Math.random()*cmds.length)];
                         addChat("VOICE", `"${cmd}"`);
-                        ws.send(JSON.stringify({type: "voice", text: cmd}));
+                        wsSend({type: "voice", text: cmd});
                         toggleVoice();
                     }
                 }, 3000);

@@ -8,8 +8,11 @@ Dual-Route Conversation, Armstrong Protocol, and Voice Grammar.
 import asyncio
 import json
 import os
+import sys
 import time
 import uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -29,6 +32,16 @@ class PoseUncertainty(BaseModel):
     sigma_R: float = 0.12
     sigma_t: float = 0.05
     confidence: Literal["high", "moderate", "low"] = "low"
+
+
+def parse_pose_uncertainty(data: Dict[str, Any]) -> PoseUncertainty:
+    """Canonical mapping: accepts sigma_R_deg/sigma_t_m or legacy sigma_R/sigma_t."""
+    return PoseUncertainty(
+        jensen_gain=data.get("jensen_gain", 2.82),
+        sigma_R=data.get("sigma_R_deg", data.get("sigma_R", 0.12)),
+        sigma_t=data.get("sigma_t_m", data.get("sigma_t", 0.05)),
+        confidence=data.get("confidence", "low"),
+    )
 
 class AnomalyState(BaseModel):
     subsystem: str = "ECLSS"
@@ -182,6 +195,7 @@ class DualRouteConversation:
     def __init__(self, llm_enabled: bool = False):
         self.history: List[ConversationTurn] = []
         self.llm_enabled = llm_enabled
+        self._embed_model = None
         
         # Deterministic grammar map (zero-shot, no training required)
         self.grammar = {
@@ -224,13 +238,13 @@ class DualRouteConversation:
         # Optional: Semantic embedding fallback (requires sentence-transformers)
         # If installed, compute cosine sim against grammar examples; else default 0.5
         try:
-            # In production, load model once at startup: self._embed_model
             from sentence_transformers import SentenceTransformer, util
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            query_emb = model.encode(text, convert_to_tensor=True)
+            if self._embed_model is None:
+                self._embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+            query_emb = self._embed_model.encode(text, convert_to_tensor=True)
             best_score = 0.0
             for intent, phrases in self.grammar.items():
-                phrase_embs = model.encode(phrases, convert_to_tensor=True)
+                phrase_embs = self._embed_model.encode(phrases, convert_to_tensor=True)
                 scores = util.cos_sim(query_emb, phrase_embs)
                 max_score = float(scores.max())
                 if max_score > best_score:
@@ -332,10 +346,11 @@ class OverrideLevel(Enum):
     REJECT = 4
 
 class ArmstrongProtocol:
-    def __init__(self):
+    def __init__(self, redis_client=None):
         self.override_db: List[Dict[str, Any]] = []
         self.modal_locked = False
         self._timeout_task: Optional[asyncio.Task] = None
+        self._redis = redis_client
 
     async def initiate_override(
         self,
@@ -343,7 +358,8 @@ class ArmstrongProtocol:
         target_action_id: str,
         operator_id: str,
         rationale: Optional[str] = None,
-        scenario_type: str = "docking_proximity"
+        scenario_type: str = "docking_proximity",
+        system_state: Optional["SystemState"] = None,
     ) -> Dict[str, Any]:
         if level not in [1, 2, 3, 4]:
             raise ValueError("Protocol violation: Unknown safety override level.")
@@ -364,9 +380,12 @@ class ArmstrongProtocol:
             rationale = ("SYSTEM_FORCE_CAPTURE: Operator triggered level change "
                          "without explicit comment.")
         
-        # HDC snapshot (D=10,000 placeholder — in production, query CognitionAgent)
-        hdc_snapshot = [0.0] * 10000
-        
+        hdc_snapshot = {}
+        if system_state and system_state.hdc_components:
+            hdc_snapshot = {
+                c.name: c.weight for c in system_state.hdc_components
+            }
+
         log_payload = {
             "override_level": level,
             "operator": operator_id,
@@ -375,10 +394,34 @@ class ArmstrongProtocol:
             "hdc_vector_snapshot": hdc_snapshot,
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
-        
+
         self.override_db.append(log_payload)
-        # Production: await CognitionAgent.AssociativeMemory.inject_one_shot_override(...)
-        
+
+        if self._redis is not None:
+            from orchestrator.message_schemas import (
+                HumanOverrideMessage, OverrideLevel, ActionType
+            )
+            level_map = {
+                1: OverrideLevel.ACKNOWLEDGE,
+                2: OverrideLevel.MODIFY,
+                3: OverrideLevel.REPLACE,
+                4: OverrideLevel.REJECT,
+            }
+            action_map = {
+                "primary": ActionType.HOLD_POSITION,
+                "alt_2": ActionType.PROCEED_SLOW,
+                "abort": ActionType.ABORT,
+                "slow": ActionType.PROCEED_SLOW,
+            }
+            override_msg = HumanOverrideMessage(
+                override_level=level_map.get(level, OverrideLevel.REPLACE),
+                selected_action=action_map.get(
+                    target_action_id, ActionType.HOLD_POSITION),
+                rationale=rationale or "",
+                operator_id=operator_id,
+            )
+            self._redis.publish("human.in", override_msg.to_json())
+
         self.modal_locked = False
         return {
             "status": "OVERRIDE_RELEASED",
@@ -432,11 +475,21 @@ class InterfaceAgent:
     def __init__(self):
         self.display = ProgressiveDisclosureEngine()
         self.conversation = DualRouteConversation(llm_enabled=False)
-        self.armstrong = ArmstrongProtocol()
+        self._redis = None
+        try:
+            import redis as redis_lib
+            self._redis = redis_lib.Redis(
+                host="localhost", port=6379, db=0, socket_connect_timeout=1)
+            self._redis.ping()
+        except Exception:
+            self._redis = None
+        self.armstrong = ArmstrongProtocol(redis_client=self._redis)
         self.voice = VoicePipeline()
         self.state = SystemState()
         self.websockets: List[WebSocket] = []
         self._tick_task: Optional[asyncio.Task] = None
+        self._redis_task: Optional[asyncio.Task] = None
+        self._demo_tick = 0
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
@@ -479,7 +532,8 @@ class InterfaceAgent:
         }
 
     async def handle_override(self, level: int, action_id: str, operator: str, rationale: Optional[str]) -> Dict[str, Any]:
-        result = await self.armstrong.initiate_override(level, action_id, operator, rationale)
+        result = await self.armstrong.initiate_override(
+            level, action_id, operator, rationale, system_state=self.state)
         await self._broadcast({
             "type": "override_result",
             "data": result
@@ -512,14 +566,31 @@ class InterfaceAgent:
         })
 
     async def simulation_tick(self):
-        """Background task: simulates inbound Redis state updates."""
+        """Demo state animation when Redis pub/sub is unavailable."""
+        import math
         while True:
             await asyncio.sleep(5)
-            # In production, this is replaced by aioredis pub/sub listener
-            # async for message in redis.pubsub().listen():
-            #     state = parse_message(message)
-            #     await self.handle_state_update(state)
-            pass
+            if self._redis_task and not self._redis_task.done():
+                continue
+            self._demo_tick += 1
+            new_state = self.state.model_copy(deep=True)
+            new_state.timestamp = datetime.utcnow()
+            new_state.pose.jensen_gain = round(
+                1.5 + 1.2 * math.sin(self._demo_tick * 0.4), 2)
+            if new_state.pose.jensen_gain > 2.0:
+                new_state.status = "RED"
+                new_state.recommendation = "HOLD POSITION - Pose Uncertain"
+            elif new_state.pose.jensen_gain > 1.8:
+                new_state.status = "YELLOW"
+            else:
+                new_state.status = "GREEN"
+                new_state.recommendation = "PROCEED SLOW - Nominal Approach"
+            new_state.confidence_pct = round(
+                max(40.0, 95.0 - new_state.pose.jensen_gain * 8), 1)
+            if new_state.anomaly and new_state.anomaly.time_to_critical:
+                new_state.anomaly.time_to_critical = max(
+                    0.0, new_state.anomaly.time_to_critical - 5.0 / 60.0)
+            await self.handle_state_update(new_state)
 
 # -----------------------------------------------------------------------------
 # FASTAPI APPLICATION
@@ -535,14 +606,18 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 @app.on_event("startup")
 async def startup():
     agent._tick_task = asyncio.create_task(agent.simulation_tick())
+    agent._redis_task = asyncio.create_task(redis_listener())
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    return "<h1>Place index.html in static/ folder</h1>"
+    for path in (
+        os.path.join(STATIC_DIR, "index.html"),
+        os.path.join(os.path.dirname(__file__), "index.html"),
+    ):
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+    return "<h1>index.html not found</h1>"
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -586,35 +661,63 @@ async def websocket_endpoint(websocket: WebSocket):
 # REDIS INTEGRATION STUB (Production Hook)
 # -----------------------------------------------------------------------------
 
-# To wire into Phase 2/3 (Cognition + Action agents), add this to startup:
-
-import aioredis
-
 async def redis_listener():
-    redis = aioredis.from_url("redis://localhost:6379")
+    """Subscribe to agent channels; falls back silently if Redis/aioredis unavailable."""
+    try:
+        import aioredis
+    except ImportError:
+        print("[Phase4] aioredis not installed — using demo simulation_tick")
+        return
+
+    try:
+        redis = await aioredis.from_url(
+            "redis://localhost:6379", decode_responses=True)
+        await redis.ping()
+    except Exception as exc:
+        print(f"[Phase4] Redis unavailable ({exc}) — using demo simulation_tick")
+        return
+
     pubsub = redis.pubsub()
     await pubsub.subscribe("perception.out", "cognition.out", "action.out")
-    
+
     async for message in pubsub.listen():
-        if message["type"] == "message":
-            channel = message["channel"].decode()
-            payload = json.loads(message["data"])
-            
-            if channel == "cognition.out":
-                # Hydrate SystemState from HDC vector + anomaly telemetry
-                new_state = SystemState(
-                    status=payload.get("status", "YELLOW"),
-                    pose=PoseUncertainty(
-                        jensen_gain=payload["pose"]["jensen_gain"],
-                        sigma_R=payload["pose"]["sigma_R"],
-                        sigma_t=payload["pose"]["sigma_t"],
-                        confidence=payload["pose"]["confidence"]
-                    ),
-                    anomaly=AnomalyState(**payload["anomaly"]) if payload.get("anomaly") else None,
-                    hdc_components=[HDCComponent(**c) for c in payload.get("hdc", [])],
-                    counterfactuals=[CounterfactualPath(**c) for c in payload.get("counterfactuals", [])]
+        if message["type"] != "message":
+            continue
+        channel = message["channel"]
+        payload = json.loads(message["data"])
+
+        if channel == "perception.out":
+            unc = payload.get("uncertainty", payload)
+            agent.state.pose = parse_pose_uncertainty({
+                "jensen_gain": unc.get("jensen_gain", payload.get("jensen_gain", 2.0)),
+                "sigma_R_deg": unc.get("sigma_R_deg", payload.get("sigma_R_deg")),
+                "sigma_t_m": unc.get("sigma_t_m", payload.get("sigma_t_m")),
+                "confidence": unc.get("confidence_level", payload.get("confidence_level", "low")),
+            })
+            await agent.handle_state_update(agent.state)
+
+        elif channel == "cognition.out":
+            severity = payload.get("anomaly_severity", "nominal")
+            status = "GREEN" if severity == "nominal" else "YELLOW"
+            if severity == "critical":
+                status = "RED"
+            new_state = agent.state.model_copy(deep=True)
+            new_state.status = status
+            new_state.recommendation = payload.get(
+                "recommended_action", new_state.recommendation).replace("_", " ").upper()
+            if payload.get("anomaly_detected"):
+                new_state.anomaly = AnomalyState(
+                    subsystem=payload.get("anomaly_type", "ECLSS"),
+                    severity=severity,
+                    description=payload.get("explanation", ""),
                 )
-                await agent.handle_state_update(new_state)
+            await agent.handle_state_update(new_state)
+
+        elif channel == "action.out":
+            new_state = agent.state.model_copy(deep=True)
+            new_state.recommendation = payload.get(
+                "primary_action", "hold_position").replace("_", " ").upper()
+            await agent.handle_state_update(new_state)
 
 
 if __name__ == "__main__":

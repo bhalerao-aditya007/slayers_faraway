@@ -12,6 +12,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional
 from enum import Enum
 
+from orchestrator.message_schemas import ActionType
+
 
 class EventType(str, Enum):
     ANOMALY             = "anomaly"
@@ -170,7 +172,7 @@ class ScenarioEngine:
             self._publish_action(sc, hab, elapsed)
 
             # Print status every 10 seconds
-            if int(elapsed) % 10 == 0:
+            if elapsed > 0 and int(elapsed) % 10 == 0 and abs(elapsed - round(elapsed)) < 1e-6:
                 self._print_status(elapsed, sc, hab)
 
             elapsed += self.dt
@@ -237,9 +239,6 @@ class ScenarioEngine:
 
     def _publish_perception(self, sc: SpacecraftState, elapsed: float):
         """Publish simulated perception message."""
-        import math
-        import numpy as np
-
         # Jensen gain spikes based on lighting + distance
         dist = sc.distance()
         jg = sc.jensen_gain_base + (0.1 * max(0, dist - 5))
@@ -283,23 +282,26 @@ class ScenarioEngine:
         severity = "nominal"
         anomaly_type = "none"
         novelty = 0.0
-        recommended = "hold_position"
+        recommended = ActionType.PROCEED_SLOW.value
 
+        # Priority: highest novelty / severity wins when multiple anomalies active
+        candidates = []
         if hab.thermal_status == SubsystemStatus.CRITICAL:
-            severity = "critical"
-            anomaly_type = "thermal_failure"
-            novelty = 0.3
-            recommended = "reconfigure_power"
-        elif hab.power_status == SubsystemStatus.CRITICAL:
-            severity = "critical"
-            anomaly_type = "power_loss"
-            novelty = 0.8  # Novel — triggers escalation
-            recommended = "isolate_module"
-        elif hab.life_support_status != SubsystemStatus.NOMINAL:
-            severity = "critical"
-            anomaly_type = "life_support_degraded"
-            novelty = 0.9
-            recommended = "await_human"
+            candidates.append((
+                0.3, "critical", "thermal_failure",
+                ActionType.RECONFIGURE_POWER.value))
+        if hab.power_status == SubsystemStatus.CRITICAL:
+            candidates.append((
+                0.8, "critical", "power_loss",
+                ActionType.ISOLATE_MODULE.value))
+        if hab.life_support_status != SubsystemStatus.NOMINAL:
+            candidates.append((
+                0.9, "critical", "life_support_degraded",
+                ActionType.AWAIT_HUMAN.value))
+
+        if candidates:
+            novelty, severity, anomaly_type, recommended = max(
+                candidates, key=lambda c: c[0])
 
         msg = {
             "agent_id": "cognition",
@@ -329,19 +331,19 @@ class ScenarioEngine:
         collision_prob = max(0.0, min(1.0, 0.01 * (5 - dist))) if dist < 5 else 0.0
 
         if dist > 5:
-            action = "proceed_slow"
+            action = ActionType.PROCEED_SLOW.value
             score = 0.85
         elif dist > 2:
-            action = "hold_position"
+            action = ActionType.HOLD_POSITION.value
             score = 0.75
         else:
-            action = "abort"
+            action = ActionType.ABORT.value
             score = 0.95
 
         # Override if habitat critical
         if (hab.power_status == SubsystemStatus.CRITICAL or
                 hab.life_support_status != SubsystemStatus.NOMINAL):
-            action = "hold_position"
+            action = ActionType.HOLD_POSITION.value
             score = 0.9
 
         msg = {
@@ -355,8 +357,8 @@ class ScenarioEngine:
             "mission_success_prob": round(score, 2),
             "resource_cost": 0.2,
             "alternatives": [
-                {"action": "hold_position", "score": 0.7},
-                {"action": "abort", "score": 0.5}
+                {"action": ActionType.HOLD_POSITION.value, "score": 0.7},
+                {"action": ActionType.ABORT.value, "score": 0.5}
             ],
             "simulation_horizon_s": 60,
             "mc_runs": 100,

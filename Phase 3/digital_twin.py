@@ -79,6 +79,8 @@ class DigitalTwin:
         final_soc = state[:, self.sim.layout.idx_soc]
         final_prop = state[:, self.sim.layout.idx_m_prop]
 
+        # Subsample history (~60 points) to avoid multi-MB payloads per action
+        step = max(1, n_steps // 60)
         return {
             'collision_probability': p_collision,
             'collision_probability_std': float(np.std(collision)),
@@ -88,8 +90,9 @@ class DigitalTwin:
             'final_soc_std': float(np.std(final_soc)),
             'final_prop_mean': float(np.mean(final_prop)),
             'final_prop_std': float(np.std(final_prop)),
-            'trajectories': traj,
-            'resources': resources,
+            'trajectories': traj[:, ::step, :],
+            'trajectory_mean': np.mean(traj, axis=0).tolist(),
+            'resources': resources[:, ::step, :],
             'dt': dt,
             'horizon': horizon
         }

@@ -78,11 +78,22 @@ class ActionAgent:
         return payload
 
     def _build_initial_state(self):
+        raw = self.latest_pose
+        if 'pose' in raw:
+            t_vec = raw['pose']['t']
+            R_mat = raw['pose']['R']
+            unc = raw.get('uncertainty', {})
+        else:
+            t_vec = raw.get('t', [0.0, 0.0, 10.0])
+            R_mat = raw.get('R', [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+            unc = raw
+
         pose = {
-            'translation': self.latest_pose['pose']['t'],
-            'quaternion': self._rotmat_to_quat(self.latest_pose['pose']['R']),
-            'sigma_t': self.latest_pose['uncertainty'].get('sigma_t', 0.05),
-            'hopf_grid': self.latest_pose['uncertainty'].get('hopf_grid')
+            'translation': t_vec,
+            'quaternion': self._rotmat_to_quat(R_mat),
+            'sigma_t': unc.get('sigma_t_m', unc.get('sigma_t', 0.05)),
+            'sigma_R': unc.get('sigma_R_deg', unc.get('sigma_R', 0.0)),
+            'hopf_grid': unc.get('hopf_grid')
         }
         habitat = {}
         if self.latest_situation and 'subsystem_states' in self.latest_situation:

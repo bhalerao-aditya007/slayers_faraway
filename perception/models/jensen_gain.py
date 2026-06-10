@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 from typing import Callable, Dict
+import matplotlib
 import matplotlib.pyplot as plt
 
 
@@ -254,4 +255,6 @@ class JensenGainMonitor:
         if save_path:
             plt.savefig(save_path, dpi=150)
             print(f"Saved to {save_path}")
-        plt.show()
+        if matplotlib.get_backend().lower() != "agg":
+            plt.show()
+        plt.close()
