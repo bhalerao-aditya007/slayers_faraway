@@ -55,6 +55,7 @@ A beautifully crafted React dashboard handling live telemetry, inference metrics
 
 - **Frontend Application:** Deployed via Vercel for instant Edge distribution.
 - **Backend Inference API:** Deployed as a scalable, 2GiB Dockerized container on **Google Cloud Run**.
+- [DEMO LINK]https://spacecraft-autonomy-222404104450.us-central1.run.app
 
 ---
 
